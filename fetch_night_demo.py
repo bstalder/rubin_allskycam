@@ -10,22 +10,15 @@ import os, sys, io, argparse, pathlib, warnings, numpy as np, pandas as pd, h5py
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 warnings.filterwarnings("ignore")
-os.environ.setdefault(
-    "AWS_SHARED_CREDENTIALS_FILE", os.path.expanduser("~/.lsst/aws-credentials.ini")
-)
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from allsky_reduce import BLACK
-from allsky_paths import ALLSKY_OUT
+from allsky_paths import ALLSKY_OUT, s3_client
 
 OUT = ALLSKY_OUT
 
 
 def s3client():
-    import boto3
-
-    return boto3.Session(profile_name="lfa").client(
-        "s3", endpoint_url="https://s3dfrgw.slac.stanford.edu/"
-    )
+    return s3_client()
 
 
 def cam_one(args):

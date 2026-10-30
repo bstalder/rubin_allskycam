@@ -8,17 +8,14 @@ convention) at the map time, and store per night:
   dream/<day_obs>.npz : mjd[n], ext_horizon[n, 12288] float32 (nan where not visible), plus per-map scalars in dream/<day_obs>.parquet:
   mjd, n_vis, frac_alt30_ext_gt_0p1, frac_alt30_ext_gt_0p3, med_ext_alt30, med_sigma
 """
-import os, io, sys, pathlib, warnings, numpy as np, pandas as pd, h5py, healpy as hp, boto3
+import os, io, sys, pathlib, warnings, numpy as np, pandas as pd, h5py, healpy as hp
 from concurrent.futures import ThreadPoolExecutor
 from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy.time import Time
 import astropy.units as u
-from allsky_paths import ALLSKY_OUT
+from allsky_paths import ALLSKY_OUT, LFA_BUCKET, s3_client
 
 warnings.filterwarnings("ignore")
-os.environ["AWS_SHARED_CREDENTIALS_FILE"] = os.path.expanduser(
-    "~/.lsst/aws-credentials.ini"
-)
 OUT = ALLSKY_OUT
 (OUT / "dream").mkdir(exist_ok=True)
 DT = 10  # minutes
@@ -32,14 +29,14 @@ ALT_H = 90 - np.degrees(th_h)
 AZ_H = np.degrees(ph_h)
 idx = pd.read_parquet(OUT / "index" / "dream_lfo_index.parquet")
 idx = idx[idx.kind == "cloud_sys"].sort_index()
-s3 = boto3.Session(profile_name="lfa").client(
-    "s3", endpoint_url="https://s3dfrgw.slac.stanford.edu/"
-)
+s3 = s3_client()
 
 
 def fetch(url):
     buf = io.BytesIO()
-    s3.download_fileobj("rubinobs-lfa-cp", url.split("rubinobs-lfa-cp/")[1], buf)
+    s3.download_fileobj(
+        LFA_BUCKET, url.split(LFA_BUCKET + "/", 1)[1], buf
+    )  # index URLs are https://<summit S3>/<bucket>/<key>
     return buf.getvalue()
 
 

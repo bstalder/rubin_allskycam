@@ -31,13 +31,10 @@ Run:  python allsky_reduce.py 20260520 20260521 --workers 32
 import os, sys, io, json, time, argparse, pathlib, warnings, traceback
 import numpy as np, pandas as pd
 
-from allsky_paths import ALLSKY_OUT
+from allsky_paths import ALLSKY_OUT, s3_client
 from allsky_units import optics
 
 warnings.filterwarnings("ignore")
-os.environ.setdefault(
-    "AWS_SHARED_CREDENTIALS_FILE", os.path.expanduser("~/.lsst/aws-credentials.ini")
-)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
@@ -195,11 +192,7 @@ class Reducer:
     @property
     def s3(self):
         if self._s3 is None:
-            import boto3
-
-            self._s3 = boto3.Session(profile_name="lfa").client(
-                "s3", endpoint_url="https://s3dfrgw.slac.stanford.edu/"
-            )
+            self._s3 = s3_client()
         return self._s3
 
     def fetch(self, uri):

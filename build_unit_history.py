@@ -15,8 +15,8 @@ Run with `python3 -E` (not `-P`: the script directory must stay on sys.path for 
 """
 import io, os, pathlib, sys
 from concurrent.futures import ThreadPoolExecutor
-import boto3, exifread, pandas as pd
-from allsky_paths import ALLSKY_OUT
+import exifread, pandas as pd
+from allsky_paths import ALLSKY_OUT, LFA_BUCKET, LFA_PREFIX, s3_client
 
 IDX = ALLSKY_OUT / "index"
 HDR_BYTES = 262144
@@ -30,12 +30,7 @@ TAGS = {
     "t_exif": "EXIF DateTimeOriginal",
 }
 
-os.environ["AWS_SHARED_CREDENTIALS_FILE"] = os.path.expanduser(
-    "~/.lsst/aws-credentials.ini"
-)
-s3 = boto3.Session(profile_name="lfa").client(
-    "s3", endpoint_url="https://s3dfrgw.slac.stanford.edu/"
-)
+s3 = s3_client()
 
 
 def read_header(uri):
@@ -97,9 +92,9 @@ if __name__ == "__main__":
     last = pd.Timestamp(str(fi.day_obs.max()))
     new = []
     for page in s3.get_paginator("list_objects_v2").paginate(
-        Bucket="rubinobs-lfa-cp",
-        Prefix="AllSkyCamera/",
-        StartAfter=f"AllSkyCamera/{last:%Y/%m/%d}/~",
+        Bucket=LFA_BUCKET,
+        Prefix=LFA_PREFIX,
+        StartAfter=f"{LFA_PREFIX}{last:%Y/%m/%d}/~",
     ):
         for o in page.get("Contents", []):
             name = o["Key"].rsplit("/", 1)[-1]
@@ -108,7 +103,7 @@ if __name__ == "__main__":
                     {
                         "day_obs": int("20" + name[3:9]),
                         "seq": int(name[9:13]),
-                        "cr2_uri": "s3://rubinobs-lfa-cp/" + o["Key"],
+                        "cr2_uri": f"s3://{LFA_BUCKET}/" + o["Key"],
                         "jpg_uri": None,
                     }
                 )

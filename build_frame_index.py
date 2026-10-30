@@ -2,22 +2,29 @@
 """Index every all-sky camera frame (Canon 5D Mk IV + 8-15 mm fisheye, Cerro Pachón) across both archives.
 
 Sources
-  disk : /sdf/data/rubin/offline/allsky/storage/utYYMMDD/ascYYMMDDNNNN.{cr2,jpg}   2021-07-10 .. 2024-02-26
-  lfa  : s3://rubinobs-lfa-cp/AllSkyCamera/YYYY/MM/DD/ascYYMMDDNNNN.{cr2,jpg}      2024-02-06 .. present
-         (USDF endpoint https://s3dfrgw.slac.stanford.edu/, profile "lfa" in ~/.lsst/aws-credentials.ini)
+  disk : $ALLSKY_DISK_ARCHIVE/utYYMMDD/ascYYMMDDNNNN.{cr2,jpg}                       2021-07-10 .. 2024-02-26
+  lfa  : s3://$ALLSKY_LFA_BUCKET/$ALLSKY_LFA_PREFIX/YYYY/MM/DD/ascYYMMDDNNNN.{cr2,jpg}  2024-02-06 .. present
+         (defaults and S3 access in allsky_paths.py: USDF /sdf/data/rubin/offline/allsky/storage and
+          s3://rubinobs-lfa-cp/AllSkyCamera/ via https://s3dfrgw.slac.stanford.edu/, profile "lfa")
 
 The directory date is the *local* date at the start of the night's sequence (seq 0001 is taken at
 12:00 UTC on that date); frames run to ~12:00 UTC the next day, so dir date == Rubin day_obs.
-Output: $ALLSKY_OUT/index/frame_index.parquet with one row per frame (default: <repo>/data/allsky):
+Output: $ALLSKY_OUT/index/frame_index.parquet with one row per frame (see allsky_paths.py):
   day_obs, seq, src, cr2_uri, jpg_uri, cr2_bytes.  EXIF times are added later by the reducer (needs the file).
 """
 import os, re, glob, pathlib, collections
-import boto3, pandas as pd
-from allsky_paths import ALLSKY_OUT
+import pandas as pd
+from allsky_paths import (
+    ALLSKY_OUT,
+    ALLSKY_DISK_ARCHIVE,
+    LFA_BUCKET,
+    LFA_PREFIX,
+    s3_client,
+)
 
 OUT = ALLSKY_OUT / "index"
 OUT.mkdir(parents=True, exist_ok=True)
-DISK = "/sdf/data/rubin/offline/allsky/storage"
+DISK = ALLSKY_DISK_ARCHIVE
 PAT = re.compile(r"asc(\d{2})(\d{2})(\d{2})(\d{4})\.(cr2|jpg)$", re.I)
 
 rows = collections.defaultdict(dict)
@@ -52,15 +59,10 @@ for d in sorted(glob.glob(f"{DISK}/ut2*")):
 print("disk frames:", sum(1 for r in rows.values() if r["src"] == "disk"))
 
 # --- LFA
-os.environ["AWS_SHARED_CREDENTIALS_FILE"] = os.path.expanduser(
-    "~/.lsst/aws-credentials.ini"
-)
-c = boto3.Session(profile_name="lfa").client(
-    "s3", endpoint_url="https://s3dfrgw.slac.stanford.edu/"
-)
+c = s3_client()
 n = 0
 for page in c.get_paginator("list_objects_v2").paginate(
-    Bucket="rubinobs-lfa-cp", Prefix="AllSkyCamera/"
+    Bucket=LFA_BUCKET, Prefix=LFA_PREFIX
 ):
     for o in page.get("Contents", []):
         m = PAT.search(o["Key"])
@@ -72,13 +74,13 @@ for page in c.get_paginator("list_objects_v2").paginate(
         if (
             k in rows and rows[k]["src"] == "disk"
         ):  # Feb 2024 overlap: prefer disk copy, record LFA too
-            rows[k][f"lfa_{ext.lower()}_uri"] = "s3://rubinobs-lfa-cp/" + o["Key"]
+            rows[k][f"lfa_{ext.lower()}_uri"] = f"s3://{LFA_BUCKET}/" + o["Key"]
             continue
         add(
             day_obs,
             int(seq),
             ext.lower(),
-            "s3://rubinobs-lfa-cp/" + o["Key"],
+            f"s3://{LFA_BUCKET}/" + o["Key"],
             o["Size"] if ext.lower() == "cr2" else None,
             "lfa",
         )

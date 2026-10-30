@@ -29,17 +29,27 @@ NV, NA, NS = len(VB) - 1, len(AB) - 1, len(SB) - 1
 
 
 def load_frames():
-    fr = pd.concat(pd.read_parquet(f) for f in sorted(glob.glob(str(OUT / "frames_regated" / "*.parquet"))))
+    fr = pd.concat(
+        pd.read_parquet(f)
+        for f in sorted(glob.glob(str(OUT / "frames_regated" / "*.parquet")))
+    )
     fr = fr[fr.reduced == True].reset_index(drop=True)
     dp = pd.concat(
         pd.read_parquet(f).assign(day_obs=int(os.path.basename(f)[:8]))
         for f in sorted(glob.glob(str(OUT / "deep_frames" / "*.parquet")))
     )
-    fr = fr.merge(dp[["day_obs", "seq", "fdeep_far", "p_chance"]], on=["day_obs", "seq"], how="left")
+    fr = fr.merge(
+        dp[["day_obs", "seq", "fdeep_far", "p_chance"]],
+        on=["day_obs", "seq"],
+        how="left",
+    )
     fr["ok"] = (fr.ast_mode != "failed") | fr.ast_ok.fillna(False).astype(bool)
     fr["epoch"] = pd.cut(fr.disk_R, EPOCH_EDGES, labels=EPOCH_NAMES).astype(object)
     st = stint_keys()
-    fr["unit"] = [st.get((int(d), optics(u)), optics(u)) for d, u in zip(fr.day_obs, fr.unit.fillna("unknown"))]
+    fr["unit"] = [
+        st.get((int(d), optics(u)), optics(u))
+        for d, u in zip(fr.day_obs, fr.unit.fillna("unknown"))
+    ]
     fr["night"] = fr.night.fillna(fr.day_obs).astype(int)
     fr["ym"] = (fr.night // 100).astype(str) + "|" + fr.unit
     return fr
@@ -58,12 +68,17 @@ def reference(fr, sel):
 
 def night_counts(args):
     """Detected / total deep-catalog star counts in (target key, V, alt, sky) bins for one directory's reference frames."""
-    d, targets = args  # targets: list of (key index, reference seqs); moon geometry per seq
+    d, targets = (
+        args  # targets: list of (key index, reference seqs); moon geometry per seq
+    )
     from deep_match import DEEP_CAT
 
     V = pd.read_parquet(DEEP_CAT, columns=["Vmag"]).Vmag.values
     try:
-        m = pd.read_parquet(OUT / "deep_matches" / f"{d}.parquet", columns=["seq", "i", "alt", "az", "detected"])
+        m = pd.read_parquet(
+            OUT / "deep_matches" / f"{d}.parquet",
+            columns=["seq", "i", "alt", "az", "detected"],
+        )
         with h5py.File(OUT / "maps" / f"{d}.h5") as h:
             seqs, sky = h["seq"][:], h["sky"][:]
     except (BlockingIOError, OSError, FileNotFoundError):
@@ -78,7 +93,15 @@ def night_counts(args):
     vb = np.digitize(V[m.i.values], VB) - 1
     ab = np.digitize(alt, AB) - 1
     sb = np.digitize(skyv, SB) - 1
-    good = np.isfinite(skyv) & (vb >= 0) & (vb < NV) & (ab >= 0) & (ab < NA) & (sb >= 0) & (sb < NS)
+    good = (
+        np.isfinite(skyv)
+        & (vb >= 0)
+        & (vb < NV)
+        & (ab >= 0)
+        & (ab < NA)
+        & (sb >= 0)
+        & (sb < NS)
+    )
     flat = (vb * NA + ab) * NS + sb
     det = m.detected.values
     mseq = m.seq.values
@@ -98,7 +121,13 @@ def night_counts(args):
 if __name__ == "__main__":
     t0 = time.time()
     fr = load_frames()
-    dark = fr.ok & (fr.sun_alt < -18) & fr.fd4_far.notna() & fr.fdeep_far.notna() & fr.sky_zenith_adu_s.notna()
+    dark = (
+        fr.ok
+        & (fr.sun_alt < -18)
+        & fr.fd4_far.notna()
+        & fr.fdeep_far.notna()
+        & fr.sky_zenith_adu_s.notna()
+    )
     UNITS = sorted(fr.unit.unique().tolist())
     KEYS = EPOCH_NAMES + UNITS + sorted(fr.ym.unique().tolist())
     KI = {k: i for i, k in enumerate(KEYS)}
@@ -111,7 +140,10 @@ if __name__ == "__main__":
         sel = dark & (fr.unit == un)
         if sel.sum() >= STINT_MIN:
             refs[un] = reference(fr, sel)
-            print(f"stint {un}: {sel.sum()} dark frames, {refs[un].sum()} reference", flush=True)
+            print(
+                f"stint {un}: {sel.sum()} dark frames, {refs[un].sum()} reference",
+                flush=True,
+            )
     for ym in sorted(fr.ym.unique()):
         sel = dark & (fr.ym == ym)
         if sel.sum() >= MONTH_MIN:
@@ -124,7 +156,9 @@ if __name__ == "__main__":
     n_all = np.zeros((len(KEYS), NV * NA * NS))
     n_det = np.zeros_like(n_all)
     with ProcessPoolExecutor(48) as ex:
-        for j, (d, res) in enumerate(ex.map(night_counts, sorted(jobs.items()), chunksize=2)):
+        for j, (d, res) in enumerate(
+            ex.map(night_counts, sorted(jobs.items()), chunksize=2)
+        ):
             if res is None:
                 print("skip (locked/missing)", d, flush=True)
                 continue

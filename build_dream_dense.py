@@ -10,7 +10,7 @@ Per night this script writes under OUT/dream_dense/:
   <day_obs>_exp.parquet    LSSTCam science exposures of the night: nearest map (|dt| ≤ 90 s), median DREAM extinction in a 1.75° disc around the pointing (equatorial, no rotation needed)
   <day_obs>_cells.parquet  allskycam frames of the night: nearest map (|dt| ≤ 60 s), per-frame NSIDE-8 cell comparison (n_cells, r, 2×2 counts cam>0.5 × dream>0.3, means)
 Then concatenates into dream_maps.parquet, dream_lsstcam_exposures.parquet, dream_allskycam_cells.parquet under
-$SYSTEM_PERFORMANCE_DATA_DIR (default ../data).
+$SYSTEM_PERFORMANCE_DATA_DIR (allsky_paths.py).
 
 Horizon rotation: the ICRS RA/Dec of every horizon pixel centre is computed once per night with astropy at the night's median time; other maps rotate
 it in RA by the change in apparent local sidereal time (nutation/aberration drift over a night ≪ the 1.8° pixel). Verified against the full astropy
@@ -19,22 +19,14 @@ Usage: build_dream_dense.py [day_obs ...] [--procs 6 --threads 12 --force]
 """
 import os, sys, io, argparse, pathlib, warnings, time, numpy as np, pandas as pd, h5py, healpy as hp
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from allsky_paths import ALLSKY_OUT
+from allsky_paths import ALLSKY_OUT, LFA_BUCKET, SYSTEM_PERFORMANCE_DATA_DIR, s3_client
 
 warnings.filterwarnings("ignore")
-os.environ.setdefault(
-    "AWS_SHARED_CREDENTIALS_FILE", os.path.expanduser("~/.lsst/aws-credentials.ini")
-)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 OUT = ALLSKY_OUT
 DD = OUT / "dream_dense"
 DD.mkdir(exist_ok=True)
-DATA = pathlib.Path(
-    os.environ.get(
-        "SYSTEM_PERFORMANCE_DATA_DIR",
-        pathlib.Path(__file__).resolve().parent.parent / "data",
-    )
-)
+DATA = SYSTEM_PERFORMANCE_DATA_DIR
 NS = 32
 NPIX = hp.nside2npix(NS)
 TH_H, PH_H = hp.pix2ang(NS, np.arange(NPIX))
@@ -49,11 +41,7 @@ FIELD_R_DEG = 1.75
 
 
 def s3client():
-    import boto3
-
-    return boto3.Session(profile_name="lfa").client(
-        "s3", endpoint_url="https://s3dfrgw.slac.stanford.edu/"
-    )
+    return s3_client()
 
 
 def horizon_to_icrs_ref(jd_ref):
@@ -101,7 +89,9 @@ def one_night(args):
     def fetch(u):
         try:
             buf = io.BytesIO()
-            s3.download_fileobj("rubinobs-lfa-cp", u.split("rubinobs-lfa-cp/")[1], buf)
+            s3.download_fileobj(
+                LFA_BUCKET, u.split(LFA_BUCKET + "/", 1)[1], buf
+            )  # index URLs are https://<summit S3>/<bucket>/<key>
             h = h5py.File(buf)
             return (
                 float(h.attrs["jd"]),

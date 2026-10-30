@@ -57,18 +57,28 @@ def build_deep_catalog():
     from scipy.spatial import cKDTree
 
     H = pd.read_parquet(HIP)
-    H = H[np.isfinite(H.Vmag) & np.isfinite(H.ra) & np.isfinite(H.dec)].reset_index(drop=True)
+    H = H[np.isfinite(H.Vmag) & np.isfinite(H.ra) & np.isfinite(H.dec)].reset_index(
+        drop=True
+    )
     v = unitvec(H.ra.values, H.dec.values)
-    pairs = cKDTree(v).query_pairs(2 * np.sin(np.radians(ISO_DEG) / 2), output_type="ndarray")
+    pairs = cKDTree(v).query_pairs(
+        2 * np.sin(np.radians(ISO_DEG) / 2), output_type="ndarray"
+    )
     V = H.Vmag.values
     blended = np.zeros(len(H), bool)
     a, b = pairs[:, 0], pairs[:, 1]
     blended[a[V[b] < V[a] + ISO_DV]] = True
     blended[b[V[a] < V[b] + ISO_DV]] = True
     D = H[(V < V_DEEP) & ~blended].reset_index(drop=True)
-    D = D[["HIP", "ra", "dec", "Vmag", "pmRA", "pmDE"]].sort_values("Vmag").reset_index(drop=True)
+    D = (
+        D[["HIP", "ra", "dec", "Vmag", "pmRA", "pmDE"]]
+        .sort_values("Vmag")
+        .reset_index(drop=True)
+    )
     D.to_parquet(DEEP_CAT)
-    print(f"deep catalog: {(V < V_DEEP).sum()} Hipparcos stars V<{V_DEEP}, {len(D)} isolated -> {DEEP_CAT}")
+    print(
+        f"deep catalog: {(V < V_DEEP).sum()} Hipparcos stars V<{V_DEEP}, {len(D)} isolated -> {DEEP_CAT}"
+    )
     return D
 
 
@@ -81,9 +91,15 @@ def night_hadec(cat, mjd0):
     t0 = Time(mjd0, format="mjd")
     dt = t0.jyear - 1991.25
     dec = cat.dec.values + cat.pmDE.values * dt / 3.6e6
-    ra = cat.ra.values + cat.pmRA.values * dt / 3.6e6 / np.cos(np.radians(cat.dec.values))
-    site = EarthLocation(lat=SITE["lat"] * u.deg, lon=SITE["lon"] * u.deg, height=SITE["height"] * u.m)
-    hd = SkyCoord(ra * u.deg, dec * u.deg).transform_to(HADec(obstime=t0, location=site))
+    ra = cat.ra.values + cat.pmRA.values * dt / 3.6e6 / np.cos(
+        np.radians(cat.dec.values)
+    )
+    site = EarthLocation(
+        lat=SITE["lat"] * u.deg, lon=SITE["lon"] * u.deg, height=SITE["height"] * u.m
+    )
+    hd = SkyCoord(ra * u.deg, dec * u.deg).transform_to(
+        HADec(obstime=t0, location=site)
+    )
     return hd.ha.deg, hd.dec.deg, site
 
 
@@ -96,8 +112,13 @@ def lst_deg(mjd, site):
 def hadec_to_altaz(ha, dec):
     lat = np.radians(SITE["lat"])
     h, d = np.radians(ha), np.radians(dec)
-    alt = np.arcsin(np.clip(np.sin(d) * np.sin(lat) + np.cos(d) * np.cos(lat) * np.cos(h), -1, 1))
-    az = np.arctan2(-np.cos(d) * np.sin(h), np.sin(d) * np.cos(lat) - np.cos(d) * np.sin(lat) * np.cos(h))
+    alt = np.arcsin(
+        np.clip(np.sin(d) * np.sin(lat) + np.cos(d) * np.cos(lat) * np.cos(h), -1, 1)
+    )
+    az = np.arctan2(
+        -np.cos(d) * np.sin(h),
+        np.sin(d) * np.cos(lat) - np.cos(d) * np.sin(lat) * np.cos(h),
+    )
     return np.degrees(alt), np.degrees(az) % 360
 
 
@@ -125,7 +146,10 @@ def _one(day_obs, dst):
 
     fr = pd.read_parquet(OUT / "frames" / f"{day_obs}.parquet")
     fr = fr[fr.reduced == True]
-    cpath, mpath = OUT / "catalogs" / f"{day_obs}.parquet", OUT / "maps" / f"{day_obs}.h5"
+    cpath, mpath = (
+        OUT / "catalogs" / f"{day_obs}.parquet",
+        OUT / "maps" / f"{day_obs}.h5",
+    )
     if len(fr) == 0 or not cpath.exists() or not mpath.exists():
         return day_obs, 0
     with h5py.File(mpath) as h:
@@ -152,7 +176,9 @@ def _one(day_obs, dst):
             d, i = tr.query(np.c_[x, y], distance_upper_bound=DEEP_R)
             det = np.isfinite(d)
             fl = np.where(det, flux[np.where(det, i, 0)], np.nan)
-            minst = np.where(det & (fl > 0), -2.5 * np.log10(np.where(fl > 0, fl, 1.0)), np.nan)
+            minst = np.where(
+                det & (fl > 0), -2.5 * np.log10(np.where(fl > 0, fl, 1.0)), np.nan
+            )
             dc, _ = tr.query(np.c_[x + CHANCE_DX, y], distance_upper_bound=DEEP_R)
             chance = np.isfinite(dc)
         else:
@@ -197,17 +223,26 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("nights", nargs="*", type=int)
     ap.add_argument("--workers", type=int, default=48)
-    ap.add_argument("--force", action="store_true", help="re-match nights that already have deep_matches/")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="re-match nights that already have deep_matches/",
+    )
     ap.add_argument("--rebuild-catalog", action="store_true")
     a = ap.parse_args()
     for sub in ["deep_matches", "deep_frames"]:
         (OUT / sub).mkdir(exist_ok=True)
     if a.rebuild_catalog or not DEEP_CAT.exists():
         build_deep_catalog()
-    nights = a.nights or sorted(int(os.path.basename(f)[:8]) for f in glob.glob(str(OUT / "frames" / "*.parquet")))
+    nights = a.nights or sorted(
+        int(os.path.basename(f)[:8])
+        for f in glob.glob(str(OUT / "frames" / "*.parquet"))
+    )
     t0 = time.time()
     with ProcessPoolExecutor(a.workers, initializer=_init) as ex:
-        for i, (d, n) in enumerate(ex.map(one, [(d, a.force) for d in nights], chunksize=1)):
+        for i, (d, n) in enumerate(
+            ex.map(one, [(d, a.force) for d in nights], chunksize=1)
+        ):
             if n == -1:
                 print("skip (locked)", d, flush=True)
             if i % 100 == 0:

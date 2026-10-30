@@ -8,16 +8,11 @@ Output: index/allsky_nightly.parquet, one row per day_obs 2021-07 -> 2026-07 wit
            LSSTCam science exposures, ConsDB-derived night class from the downtime notebook, DREAM frac(ext>0.1) median
 """
 import glob, os, pathlib, warnings, numpy as np, pandas as pd
-from allsky_paths import ALLSKY_OUT
+from allsky_paths import ALLSKY_OUT, SYSTEM_PERFORMANCE_DATA_DIR
 
 warnings.filterwarnings("ignore")
 OUT = ALLSKY_OUT
-SP = pathlib.Path(
-    os.environ.get(
-        "SYSTEM_PERFORMANCE_DATA_DIR",
-        pathlib.Path(__file__).resolve().parents[1] / "data",
-    )
-)
+SP = SYSTEM_PERFORMANCE_DATA_DIR
 cl = pd.read_parquet(OUT / "index" / "cloud_all_frames.parquet")
 fr = pd.read_parquet(OUT / "index" / "frames_all_regated.parquet")
 cl = cl.drop(columns=[c for c in ["ast_mode"] if c in cl]).merge(

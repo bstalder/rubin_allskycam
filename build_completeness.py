@@ -20,12 +20,12 @@ The camera's focal length (8/9/10 mm) changed several times; clear-sky completen
 expected stars in 2021-2025 and leaves a 0.1-0.3 cloud-index floor on clear nights.
 Epochs are keyed on the illuminated disk radius (px, green plane): <1100 = 8 mm, 1100-1180, 1180-1270 = 9 mm, >1270 = 10 mm.
 Reference ("clear") frames: sun < -18, geometry OK (moonlit frames included so bright-sky bins are calibrated), and fd4_far in the
-top 35 % of that month's / epoch's frames (fd4_far is nearly moon-independent so this is a clean clear-sky selector);
-for the 8 mm/2026 epoch Scheduler-OPERATIONAL frames are used instead when available.
+top 35 % of that month's / epoch's frames (fd4_far is nearly moon-independent so this is a clean clear-sky selector).
+The Scheduler OPERATIONAL flag (`oper`) is attached when the ROSP-11 cache is present but does not select the reference.
 Output: calib/clear_sky_completeness_v2.parquet with columns epoch, Vlo..sky_hi, n_det, n, p_det.
 """
 import glob, os, pathlib, warnings, numpy as np, pandas as pd, h5py, healpy as hp, time
-from allsky_paths import ALLSKY_OUT
+from allsky_paths import ALLSKY_OUT, SYSTEM_PERFORMANCE_DATA_DIR
 from allsky_units import optics, stint_keys
 
 warnings.filterwarnings("ignore")
@@ -70,16 +70,15 @@ fr["unit"] = [
     )
 ]  # service stint (see v6 note)
 fr["night"] = (fr.night if "night" in fr else fr.day_obs).fillna(fr.day_obs).astype(int)
-SYSTEM_DATA = pathlib.Path(
-    os.environ.get(
-        "SYSTEM_PERFORMANCE_DATA_DIR",
-        pathlib.Path(__file__).resolve().parents[1] / "data",
-    )
-)
-st = pd.read_parquet(SYSTEM_DATA / "scheduler_observatory_status.parquet")
-st = st[st.salIndex == 1].sort_index()
-t = pd.to_datetime(fr.t_mid, utc=True)
-fr["oper"] = st.status.reindex(t, method="ffill").values == 2
+# Scheduler observatoryStatus (ROSP-11 cache, optional): marks OPERATIONAL frames. Diagnostic only, not used to select the reference.
+SCHED = SYSTEM_PERFORMANCE_DATA_DIR / "scheduler_observatory_status.parquet"
+if SCHED.exists():
+    st = pd.read_parquet(SCHED)
+    st = st[st.salIndex == 1].sort_index()
+    t = pd.to_datetime(fr.t_mid, utc=True)
+    fr["oper"] = st.status.reindex(t, method="ffill").values == 2
+else:
+    fr["oper"] = False
 dark = (
     ok & (fr.sun_alt < -18) & fr.fd4_far.notna()
 )  # moonlit frames INCLUDED: the bright-sky bins must be calibrated on real moonlit clear skies (stars within 25 deg of the moon are already excluded); fd4_far is nearly moon-independent so the top-35% cut still selects clear skies

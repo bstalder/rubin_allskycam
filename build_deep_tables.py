@@ -18,10 +18,25 @@ dc = pd.concat(
 )
 cl = pd.read_parquet(
     OUT / "index" / "cloud_all_frames.parquet",
-    columns=["day_obs", "seq", "cloud_idx", "frac_sky_cloudy", "n_cells", "night", "unit", "sun_alt", "moon_alt"],
+    columns=[
+        "day_obs",
+        "seq",
+        "cloud_idx",
+        "frac_sky_cloudy",
+        "n_cells",
+        "night",
+        "unit",
+        "sun_alt",
+        "moon_alt",
+    ],
 )
-fr = pd.read_parquet(OUT / "index" / "frames_all_regated.parquet", columns=["day_obs", "seq", "zp", "n_phot"])
-D = dc.merge(cl, on=["day_obs", "seq"], how="left").merge(fr, on=["day_obs", "seq"], how="left")
+fr = pd.read_parquet(
+    OUT / "index" / "frames_all_regated.parquet",
+    columns=["day_obs", "seq", "zp", "n_phot"],
+)
+D = dc.merge(cl, on=["day_obs", "seq"], how="left").merge(
+    fr, on=["day_obs", "seq"], how="left"
+)
 D["night"] = D.night.fillna(D.day_obs).astype(int)
 D.to_parquet(OUT / "index" / "deep_cloud_all_frames.parquet", index=False)
 dark = D[D.sun_alt < -12]
@@ -42,10 +57,14 @@ N = pd.DataFrame(
         cells8_med=g.n_cells8.median(),
         cells16_med=g.n_cells16.median(),
         std_cells8_med=g.n_cells.median(),
-        model_key=g.model_key.agg(lambda s: s.mode().iloc[0] if len(s.dropna()) else None),
+        model_key=g.model_key.agg(
+            lambda s: s.mode().iloc[0] if len(s.dropna()) else None
+        ),
     )
 )
 N.index.name = "day_obs"
 N.reset_index().to_parquet(OUT / "index" / "deep_nightly.parquet", index=False)
-print(f"deep frames {len(D)}, nights {len(N)}; dark-frame medians: cells8 {N.cells8_med.median():.0f} "
-      f"(standard {N.std_cells8_med.median():.0f}), cells16 {N.cells16_med.median():.0f}")
+print(
+    f"deep frames {len(D)}, nights {len(N)}; dark-frame medians: cells8 {N.cells8_med.median():.0f} "
+    f"(standard {N.std_cells8_med.median():.0f}), cells16 {N.cells16_med.median():.0f}"
+)
