@@ -1,15 +1,124 @@
-# All-sky camera reduction (Canon 5D Mark IV + EF 8-15 mm fisheye, Cerro Pachón)
+# rubin_allskycam — all-sky camera cloud reduction
 
-Turns the 2021-07 → present all-sky archive into a site cloud / transparency / sky-brightness record.
+Reduction of the Rubin Observatory all-sky camera (Canon 5D Mark IV + EF 8–15 mm fisheye, Cerro Pachón; "allskycam" below, to keep it distinct from LSSTCam) into a measured per-frame cloud, transparency and sky-brightness record, 2021-07 → present.
 
-**Analysis notebook: `allsky_cloud_analysis.ipynb`** (in [lsst/sp_notebooks, ROSP-11](https://github.com/lsst/sp_notebooks/tree/main/tracking_hub/ops/rosp-11_time_loss_accounting), next to the weather-downtime notebook) — validation of the cloud index against the Scheduler WEATHER flag, comparison with the meteoblue nowcast, DREAM and the CTIO cloud DB, 2021–26 climatology, transparency / sky-brightness / streak by-products, and the revised scheduler-simulation input. Outputs: `../data/allsky_cloud_results.json`, `../data/allsky_monthly_cloud_climatology.csv`, `../data/allsky_nightly_summary.parquet`.
-Supporting scripts: `sample_dream.py` (DREAM cloud maps from the LFA, 1 per 10 min, rotated to horizon coords; superseded for analysis by `build_dream_dense.py`, which takes **every** map at ~32 s cadence and also writes the DREAM extinction at each LSSTCam pointing and a cell-by-cell comparison with the allskycam into `../data/dream_*.parquet` for §4.5 of the downtime notebook), `build_nightly.py` (per-night join of allskycam products with Scheduler/EFD/ConsDB/nowcast/DREAM records → `index/allsky_nightly.parquet`).
+This repository is being **handed over to DM to operate automatically**. Until 2026-10-30 it ran by hand at USDF as `earlyoperations/system_performance/allsky/` in [bstalder/rubin_notebooks](https://github.com/bstalder/rubin_notebooks), and its git history is carried over. Its main consumer is the ROSP-11 time-loss analysis in [lsst/sp_notebooks `tracking_hub/ops/rosp-11_time_loss_accounting/`](https://github.com/lsst/sp_notebooks/tree/main/tracking_hub/ops/rosp-11_time_loss_accounting): `allsky_cloud_analysis.ipynb` (validation, climatology, deep index §6.1) and `weather_downtime_analysis.ipynb`.
 
-## allskycam vs DREAM side-by-side (`fetch_night_demo.py`, `render_cam_dream.py`)
-`fetch_night_demo.py <day_obs> [--full seq ...]` pulls the night's raw CR2 frames (4×-binned green plane) and **every** DREAM `cloud_sys` map (rotated to horizon coordinates) into `OUT/demo/<day_obs>/`.
-`render_cam_dream.py <day_obs> --seq N --out f.png` draws one frame: allskycam pixels + detected/missed BSC stars, NSIDE-8 cloud-index map, metrics / DREAM native NSIDE-32 extinction, NSIDE-8 mean, metrics / whole-night time-series strip. Every sky panel is in the allskycam pixel frame through the per-frame astrometric solution (E up, N right). `--movie [--t0 HH:MM --t1 HH:MM] --fps 12` renders one PNG per allskycam minute and encodes an H.264 mp4 (ffmpeg from the lsst-scipipe env). Example products in `figures/` (night 2025-09-19: broken cloud 23:30–04:30 UTC, then clear). Orientation check: per-cell correlation allskycam index vs DREAM extinction is r≈0.6 with the identity azimuth mapping and ≈0.1–0.2 for mirrored / rotated alternatives, so `sample_dream.to_horizon` has the right handedness.
+Contact: Brian Stalder.
 
-## Data
+## Status at handover (2026-10-30)
+
+* **Record:** 1,685 nights, 966,103 reduced dark frames, 2021-07-09 → 2026-10-29, reduced at USDF into `/sdf/data/rubin/user/stalder/allsky` (278 GB). Nights from 2026-10-30 on are not reduced.
+* **Code:** pipeline v6 plus the deep index (pipe_version 6, deep v1). Every night is on v5 or v6, and v6 changed only the astrometry seeding and plate-scale scan.
+* **Camera:** body 8323 + lens 0552 since 2026-10-10. It was refocused on 2026-10-16 (star FWHM 1.4 px, the best on record). The 8–15 mm zoom creeps between visits: plate scale 755 → 862 px/rad from 10-16 to 10-27. Focus holds, and v6 follows the creep.
+* **Headline:** fraction of dark time with cloud index > 0.3 is **0.152** (equal-month mean, 2021–26; 0.129 at > 0.5). Validated against the Scheduler WEATHER flag: P(index > 0.3 | WEATHER) = 0.69, P(index > 0.3 | OPERATIONAL) = 0.05.
+* **Regression check of this repository's layout change:** 24 frames of 2026-10-27 were reduced with the old rubin_notebooks code and with this repository's code, each into its own scratch root. `frames`, `catalogs`, `matches`, `streaks`, `maps`, the night solution, `deep_matches` and `deep_frames` are bit-identical. `build_frame_index.py` and `build_unit_history.py` reproduce the production index (same URIs for every common frame) and unit table.
+
+## What the pipeline does
+
+1. **Index** both raw archives (`build_frame_index.py`) and read the camera body/lens serials of every night from EXIF (`build_unit_history.py`). Three bodies and three lenses were swapped six times; see *Camera units* below.
+2. **Reduce** each night (`allsky_reduce.py`), about 1.5 min a night at 48–60 workers. For every 30 s dark frame (sun < −12°), read the CR2 green plane and find stars (DAOStarFinder). Solve a tilt-aware fisheye astrometric model against the Yale BSC, refining the running solution and following the plate-scale creep. Then match BSC V < 6 stars, fit a zero point, and write HEALPix NSIDE-32 maps of catalog stars, detected stars and sky brightness, plus streaks and an 8×-binned image.
+3. **Derive** (`finalize_rerun.sh`): re-gate astrometry from the stored detections (`regate_frames.py`), then build a clear-sky completeness model P(detect | V, alt, local sky) per service stint × month (`build_completeness.py`). The per-frame **cloud index** = 1 − observed/expected for V < 5.5 stars above 20°, per frame and per NSIDE-8 cell (`cloud_metric.py`). Finally write the summary tables (`build_index_tables.py`, `build_nightly.py`).
+4. **Deep index** (`finalize_deep.sh`): Hipparcos V < 7.5 matched to the same detections with no CR2 re-read (`deep_match.py`), with its own completeness model (`build_completeness_deep.py`). It gives `cloud_idx_deep` and `ext_deep`, a grey extinction in magnitudes that is sensitive to thin cloud, plus NSIDE-8/16 cell maps (`cloud_metric_deep.py`, `build_deep_tables.py`). It runs alongside the standard index and does not replace it.
+
+`follow_night.sh` runs steps 1–4 for one night in progress: it re-reduces hourly and finalizes at the end.
+
+## Repository layout
+
+| file | role | hand over? |
+|---|---|---|
+| `allsky_paths.py` | **site configuration**: product root, raw archives, S3 endpoint/profile/bucket, external cache dir; all overridable by environment | yes |
+| `allsky_units.py` | camera service stints (`stint_keys`), manual refocus `BREAKS`, young-stint `PROXY` | yes (see issue 3) |
+| `build_frame_index.py`, `build_unit_history.py` | archive index, camera body/lens per night | yes |
+| `allsky_reduce.py` | per-frame reduction (the only step that reads CR2s) | yes |
+| `regate_frames.py`, `build_completeness.py`, `cloud_metric.py`, `build_index_tables.py` | standard cloud index | yes |
+| `deep_match.py`, `build_completeness_deep.py`, `cloud_metric_deep.py`, `build_deep_tables.py` | deep cloud index | yes |
+| `finalize_rerun.sh`, `finalize_deep.sh`, `follow_night.sh`, `run_nights.sbatch` | drivers (manual, USDF Slurm) | replace with DM orchestration |
+| `focus_check.py` | star FWHM in raw cutouts: detects refocus / defocus | yes (issue 3) |
+| `build_nightly.py` | per-night join with ROSP-11 caches (Scheduler, EFD, almanac, nowcast, downtime attribution); writes `allsky_cloud_frames.parquet` for the downtime notebook | analysis side, decide (issue 6) |
+| `build_dream_dense.py`, `sample_dream.py` | DREAM cloud maps from the LFA, joined to allskycam and LSSTCam | analysis side, decide (issue 6) |
+| `fetch_night_demo.py`, `render_cam_dream.py` | side-by-side allskycam/DREAM frames and movies | optional (viz) |
+| `rerun_notebooks.sh` | re-executes the two ROSP-11 notebooks | analysis side |
+
+The scripts are flat modules that import each other (`from allsky_reduce import ...`), so run them from the repository root with `python3 -E` (not `-P`, which drops the script directory from `sys.path`). `pyproject.toml` lists the dependencies; the repository is not yet an installable package (issue 8).
+
+## Configuration
+
+All site paths are in `allsky_paths.py`, and each can be overridden by environment:
+
+| variable | default (USDF) | used by |
+|---|---|---|
+| `ALLSKY_OUT` | `<repo>/data/allsky` (set it; the 2021–26 products are at `/sdf/data/rubin/user/stalder/allsky`) | everything |
+| `ALLSKY_DISK_ARCHIVE` | `/sdf/data/rubin/offline/allsky/storage` (2021-07-10 → 2024-02-26) | `build_frame_index.py` |
+| `ALLSKY_LFA_BUCKET`, `ALLSKY_LFA_PREFIX` | `rubinobs-lfa-cp`, `AllSkyCamera/` (2024-02-06 → present) | index, unit history, DREAM |
+| `ALLSKY_S3_ENDPOINT`, `ALLSKY_S3_PROFILE` | `https://s3dfrgw.slac.stanford.edu/`, `lfa` | all S3 reads |
+| `AWS_SHARED_CREDENTIALS_FILE` | `~/.lsst/aws-credentials.ini` | boto3 |
+| `SYSTEM_PERFORMANCE_DATA_DIR` | `/sdf/data/rubin/user/stalder/system_performance_data` | `build_nightly.py`, `build_dream_dense.py` (required); `build_completeness.py` (optional) |
+| `PYTHON` | `lsst-scipipe-13.0.0` interpreter in the shell drivers | drivers |
+
+Dependencies (`pyproject.toml`): numpy, pandas, pyarrow, scipy, astropy, photutils, healpy, h5py, **rawpy** (CR2 decoding, LibRaw), **exifread**, boto3, opencv-python-headless; optionally matplotlib for the viz scripts. All are in `lsst-scipipe-13.0.0`.
+
+## Running (today, by hand at USDF)
+
+```bash
+export ALLSKY_OUT=/sdf/data/rubin/user/stalder/allsky
+export SYSTEM_PERFORMANCE_DATA_DIR=/sdf/data/rubin/user/stalder/system_performance_data
+PY=/sdf/group/rubin/sw/conda/envs/lsst-scipipe-13.0.0/bin/python3
+cd rubin_allskycam
+
+# catch up nights NIGHT1 NIGHT2 ...
+$PY -E build_frame_index.py                         # ~2 min, lists both archives
+$PY -E build_unit_history.py 32                     # ~2 min, camera body/lens per night
+$PY -E allsky_reduce.py NIGHT1 NIGHT2 --workers 48  # ~1.5 min/night; add --force to redo a night
+echo NIGHT1 NIGHT2 | tr ' ' '\n' > $ALLSKY_OUT/index/nights_catchup_YYYYMMDD.txt
+PYTHON=$PY ./finalize_rerun.sh $ALLSKY_OUT/index/nights_catchup_YYYYMMDD.txt   # ~25 min, every night
+PYTHON=$PY ./finalize_deep.sh  $ALLSKY_OUT/index/nights_catchup_YYYYMMDD.txt   # ~25 min, every night
+
+# or follow tonight, re-reducing hourly and finalizing at the end
+./follow_night.sh 20261030 2026-10-31T12:15 3600
+
+# batch re-reduction (Slurm, rubin:commissioning / milano), from the repository root
+sbatch --array=0-5 run_nights.sbatch <night list>
+sbatch --export=ALL,ALLSKY_EXTRA=--force --array=0-3 run_nights.sbatch <night list>
+```
+
+Inputs that must exist under `ALLSKY_OUT` before a first run (copy from the USDF root):
+* `catalogs/bsc5_v50.parquet`: Yale Bright Star Catalogue 5th ed. (VizieR V/50), all 9,096 stars with positions. The reducer keeps V < 6 for matching, V < 4 for astrometry and V < 5.5 for the index.
+* `catalogs/hipparcos_v85.parquet`: Hipparcos main catalog (VizieR I/239), the 61,293 stars with V < 8.5, positions at epoch J1991.25. `deep_match.py` derives `catalogs/hip_deep_v75.parquet` from it.
+* `calib/astrometry_bootstrap_clear.json`: the fall-back astrometric seed. `calib/astrometry/<day_obs>.json` holds the per-night solutions (1,627 nights), which seed the nearest night of the same body + lens.
+* For a fresh `ALLSKY_OUT` the whole history must be present, or rebuilt, before the completeness model is meaningful. The model pools every reduced night of a service stint.
+
+## Issues to be decided for the handover
+
+1. **Where it runs and who triggers it.** Today a person runs the driver scripts, or `follow_night.sh` under `nohup` on an interactive node; there is no cron at USDF for this account. Options: a scheduled job at USDF (Slurm cron, or a Kubernetes CronJob in DM's environment) running *index → reduce last night → finalize* each morning; or a Prompt-Processing-style trigger on new LFA objects. **DM to decide.** Each frame is independent, so the reduction maps well onto a per-night batch job.
+
+2. **Product storage, format and ownership.** Products are parquet / HDF5 / JSON files under one user directory (278 GB; about 170 MB/night standard + 22 MB/night deep, about 70 GB/year). Decide: a DM-owned location; whether products stay files or go into the Butler, ConsDB or the EFD (the per-frame cloud index and the nightly summary are natural ConsDB/EFD tables); retention for the large intermediates (`catalogs/` 93 GB, `maps/` 86 GB, `matches/` 58 GB, `deep_matches/` 37 GB), which can be regenerated from the CR2s; and whether the 2021–26 record is migrated or re-reduced (re-reduction is about 1,700 nights × 1.5 min of 48-core time). The USDF copy can stay as the reference for validating DM's first runs.
+
+3. **Camera service visits need a person today.** A refocus or zoom reset without a body/lens swap starts a new completeness "stint" only when someone adds the night to `allsky_units.BREAKS`. Until the new stint has 800 dark frames of its own, `allsky_units.PROXY` can borrow a matching stint's reference. Without the break the clear-sky reference mixes two focus states: on 2026-10-16 the 2.7-px reference would have read thin cloud as clear on the 1.4-px camera. Body/lens swaps are detected automatically from EXIF. Options: detect visits automatically from a step in star FWHM (`focus_check.py` already measures it) or in plate scale and disk radius (stored per frame); or keep a documented operator step with an alert. Either way someone in the observatory must report camera visits. The camera has no telemetry; the only signals are the EXIF tags and the images.
+
+4. **Full-archive recompute on every update.** Both finalize scripts rebuild the completeness models from every night and recompute the cloud index for every night (about 50 min together today, and growing). This is correct, because adding nights changes the month/stint reference, but it is wasteful nightly. Options: score new nights against the current model each night, and rebuild the models weekly or after a camera visit (the change to old nights is ≤ 0.01 in index in practice); or make the model per stint-month immutable once the month closes. **Decide which values are "final"** and how the downstream tables are versioned.
+
+5. **External dependency on ROSP-11 caches.** `build_completeness.py` reads `scheduler_observatory_status.parquet` only if it exists (diagnostic `oper` column; the clear-sky reference does not use it). `build_nightly.py` and `build_dream_dense.py` need several ROSP-11 caches: Scheduler status, almanac, ConsDB pointings, meteoblue nowcast, EFD aggregates and the downtime attribution. These are built by `build_log_cache.py` / `build_weather_cache.py` in rubin_notebooks. Decide whether DM takes these joins (by querying ConsDB/EFD directly), or the reduction stops at `index/cloud_all_frames.parquet` + `index/deep_nightly.parquet` and ROSP-11 keeps the joins.
+
+6. **Analysis-side scripts.** `build_nightly.py`, `build_dream_dense.py`, `sample_dream.py`, `fetch_night_demo.py`, `render_cam_dream.py` and `rerun_notebooks.sh` serve the ROSP-11 analysis, not the reduction. Decide: keep them here as optional tools, or move them back to the analysis (sp_notebooks or rubin_notebooks). In either case **agree the interface**: which tables DM publishes, their schema, and where. The ROSP-11 notebooks read `index/allsky_nightly.parquet`, `index/cloud_all_frames.parquet`, `index/frames_all_regated.parquet`, `index/cloud_pix8_nightly.parquet`, `index/streaks_nightly.parquet`, `index/deep_cloud_all_frames.parquet`, `index/deep_nightly.parquet`, `calib/clear_sky_completeness_deep.parquet`, and `SYSTEM_PERFORMANCE_DATA_DIR/allsky_cloud_frames.parquet`.
+
+7. **Credentials and data access.** S3 reads use a personal AWS shared-credentials profile `lfa` against the USDF gateway. DM needs a service identity with read access to `rubinobs-lfa-cp/AllSkyCamera/` (and `DREAM/` if issue 6 keeps DREAM) and to the pre-2024 disk archive. Reading at the summit or from another site only needs `ALLSKY_S3_ENDPOINT` / `ALLSKY_LFA_BUCKET` changed.
+
+8. **Packaging and tests.** The scripts are flat modules run from the repository root; there are no unit tests. Suggested: turn them into a package (`rubin_allskycam/`) with command-line entry points; add a regression test that reduces a few fixed frames (clear, moonlit, cloudy, swap night) and compares against stored outputs; and add a test of `allsky_units.stint_keys`. Decide whether this lives in the Science Pipelines stack (EUPS, `lsst-scipipe`) or as a standalone pip-installable package. The dependencies `rawpy` (LibRaw) and `exifread` are not in the DM stack baseline everywhere.
+
+9. **Monitoring and quality gates.** The manual checks today are: astrometry success and rms per night (`frames.ast_mode`, `ast_rms_px`; the ROSP-11 notebook gates nights with median rms > 1.4 px); a clear-sky index floor near 0 on clear nights (a flat 0.1–0.6 floor was the v1/v3 failure mode); plate-scale creep (`astrometry_p[:, 5]`); and star FWHM after any visit. These should become alerts. A night with no solved frames (overcast) is normal. A night where clear frames fail is not.
+
+10. **Repository home and name.** This repository is currently `bstalder/rubin_allskycam` (personal). Decide the GitHub org (lsst, lsst-dm or lsst-sitcom) and name before DM forks it; licence and copyright are carried over from rubin_notebooks (GPL-3.0 / BSD-3-Clause dual licence).
+
+11. **Camera hardware.** Not a DM issue, but it affects the record. The shutter on body 8323 has at least 792,547 archived actuations against a 150,000 rating, and the zoom ring creeps after each visit. A body swap or a zoom lock changes the stint structure (issue 3).
+
+Known limitations of the measurement (relevant to whoever owns the data): the standard index sees thick cloud, not thin; the deep index measures thin cloud only on sharp stints (FWHM ≲ 1.5 px); stars within 25° of the moon are excluded; the 2021-07 → 2022-05 archive directories are UTC dates (handled by the per-frame `night` column); the streak counts are not validated against a satellite catalog.
+
+---
+
+# Reference: data, camera history and pipeline versions
+
+### Data
 | archive | span | location |
 |---|---|---|
 | disk | 2021-07-10 → 2024-02-26 | `/sdf/data/rubin/offline/allsky/storage/utYYMMDD/` |
@@ -21,7 +130,7 @@ Focal length changed over time (EXIF): 8 mm (2021-07, 2022, 2026) / 9 mm (2021-1
 
 **Camera units.** Three Canon bodies and three lenses were swapped six times (`build_unit_history.py` reads the EXIF body/lens serials of every night → `index/unit_nights.parquet`, `index/unit_epochs.parquet`). Every swap happened in daytime. A unit is labelled `body/lens/focal` by the serials' last four digits, e.g. `8323/0552/10`. The camera writes no shutter count; archived frames per body are a lower bound on actuations.
 
-Shutter actuations (archived frames, one CR2+JPEG pair = one shot) as of 2026-10-10 23:01 UTC. These are lower bounds: shots before 2021-07-10, test shots and archive gaps are not counted. Canon rates the 5D Mk IV shutter at 150,000 actuations.
+Shutter actuations (archived frames, one CR2+JPEG pair = one shot) as of 2026-10-10 23:01 UTC (the epoch table below is updated to 2026-10-30). These are lower bounds: shots before 2021-07-10, test shots and archive gaps are not counted. Canon rates the 5D Mk IV shutter at 150,000 actuations.
 
 | body (serial) | internal serial | epochs in service | archived actuations |
 |---|---|---|---|
@@ -37,12 +146,12 @@ Shutter actuations (archived frames, one CR2+JPEG pair = one shot) as of 2026-10
 | 2023-02-14 → 2023-11-18 | B3 | 7220000545 | 261 | 222,806 |
 | 2023-11-18 → 2025-12-04 | B2 | 7220000552 | 725 | 611,133 |
 | 2025-12-04 → 2026-07-18 | B1 | 7520000165 | 224 | 197,448 |
-| 2026-10-10 → | B2 | 7220000552 | 1 | 136 |
+| 2026-10-10 → | B2 | 7220000552 | 21 | 16,789 |
 
 The archive averages ~850 frames per night (B2's 2023–25 epoch: 611,133 frames over 725 nights), so a body in continuous service adds roughly 0.3 M actuations a year. Re-run `build_unit_history.py` to update the counts; it rewrites `index/unit_epochs.parquet` and prints the per-body totals.
 **Directory dates.** 2021-07 → 2022-05 directories are UTC dates, not Rubin nights (EXIF time − dir date ≈ −12 h), so each holds the end of one night and the start of the next. From v4 every frame carries `night` (EXIF time − 12 h); nightly tables are keyed on it, while `(day_obs = directory date, seq)` stays the unique frame key.
 
-## Pipeline (`allsky_reduce.py`, v4)
+### Pipeline history (`allsky_reduce.py` v4 → v6, deep index)
 v4 (2026-10-10, full re-reduction of all nights): records `unit` and `night` per frame. Every night is re-reduced, so the 1,052 nights still on v1 now get the v3 matcher and moon handling. Under v1, full-moon nights failed 51 % of dark frames, and some failed all of them (e.g. 2025-06-10: 0/656 solved; 656/656 under v4). The running astrometric solution is now seeded from the nearest solved night *of the same unit* and switches seed mid-night on a swap day. Previously it took the nearest night of any unit, or the 2026 bootstrap (unit `9118/0165/8`), so it could start from the wrong camera's geometry. Frames whose EXIF clock is > 2 days from the directory date are skipped (`bad_exif_time`; 20 frames on 2025-12-04 stamped 2024-12-03). The completeness model is per unit × month (`YYYYMM|unit`, then the same unit's nearest month ≤ 3 months, then the whole-unit table, then the lens epoch). The old per-month tables mixed units in swap months; the clear-sky reference then came mostly from the sharper unit and left a 0.1–0.3 floor on the softer unit's clear nights (Feb 2023: 0.60 cloudy vs nowcast 0.00). The v3 products are kept in `snapshot_v3_20261010/`.
 v5 (2026-10-10, the full re-reduction actually run): v4 plus looser DAOStarFinder shape cuts (`DAO_SHAPE`: sharpness 0.05–2.0, roundness ±1.5; was 0.1–1.2, ±0.8). The old cuts rejected the soft, elongated off-axis PSFs of the defocused configurations. On a 106-night clear-sky sample, V<5 completeness went from 0.67–0.84 to 0.90–1.00 in every configuration, and at 20–30° altitude from 0.53–0.72 to 0.96–1.00, for +0.005–0.014 chance matches. Best configuration for cloud measurement: B1 + lens 7520000165 at 8 mm, Feb–May 2022 (zenith FWHM 1.4 px); lens 7220000552 was the softest in every stint (2.7–3.5 px). Focus is the main variable: the same B1 + 7520000165 unit was 2.6 px in 2025–26.
 Night solution on cloudy nights (2026-10-11): `calib/astrometry/<day_obs>.json` is written from the best frame with > 100 matches, or, if none, from refine frames with ≥ 40 matches and rms < 0.8 px. The allskycam was re-mounted 4.6° in roll between 2022-05 and the 2026-10-10 restart, and that cloudy first night had no frame above 100 matches; seeded from the 2022 solution only 22/515 dark frames solved, from the night's own geometry 95/515.
@@ -57,7 +166,7 @@ Catch-up 2026-10-28 (nights 2026-10-18 → 10-27, `index/nights_catchup_20261028
 
 Per frame: fetch → EXIF time → skip if sun alt > −12° → decode green Bayer plane `[0::2,1::2]` → 8×-binned median background → disk centre/radius → DAOStarFinder (FWHM 4 px, 5σ on a **locally adaptive** noise map so moon glare / Milky Way do not flood the list) → tilt-aware fisheye astrometry against the Yale BSC (refine the running solution incl. plate scale; coarse roll/scale bootstrap if the allskycam moved; stars within 25° of the moon excluded; matched against **all** sharp detections, not the brightest 400) → match V<6 catalog stars (3 px) → zero point + airmass slope → HEALPix NSIDE 32 horizon-coordinate maps (n_cat, n_det, sky) → streak finder → 8×-binned image.
 
-Products under `ALLSKY_OUT` (default: `<repo>/data/allsky`; approximately 170 MB/night):
+### Products under `ALLSKY_OUT` (~170 MB/night standard + ~22 MB/night deep)
 | dir | content |
 |---|---|
 | `frames/<day_obs>.parquet` | one row per frame: t_mid, night, unit, sun/moon, n_det, astrometry quality (`ast_mode` refine/bootstrap/failed), `frac_det_alt30_V5/V4` (detected fraction of BSC stars alt>30°, >25° from the moon), `frac_det_alt30_V5_nearmoon`, zp, k_airmass, sky_zenith_adu_s, n_streaks, `pipe_version` |
@@ -70,26 +179,19 @@ Products under `ALLSKY_OUT` (default: `<repo>/data/allsky`; approximately 170 MB
 | `streaks/` | elongated components (satellites / aircraft) |
 | `calib/astrometry/<day_obs>.json` | per-night refined solution (used as the seed for the nearest unsolved night) |
 | `deep_matches/`, `deep_frames/`, `deep_cloud/`, `deep_cloud_pix/` | deep (Hipparcos V<7.5) match and cloud index, see *Deep index* above; model `calib/clear_sky_completeness_deep.parquet` |
-| `index/` | `frame_index.parquet` (1.43 M frames), `night_index.parquet`, `night_ephemeris.parquet`, night lists |
+| `index/` | `frame_index.parquet` (1.45 M frames), `night_index.parquet`, `night_ephemeris.parquet`, night lists |
 
-## Astrometry failures (`ast_mode == 'failed'`)
+### Analysis-side scripts (issue 6)
+Supporting scripts: `sample_dream.py` (DREAM cloud maps from the LFA, 1 per 10 min, rotated to horizon coords; superseded for analysis by `build_dream_dense.py`, which takes **every** map at ~32 s cadence and also writes the DREAM extinction at each LSSTCam pointing and a cell-by-cell comparison with the allskycam into `$SYSTEM_PERFORMANCE_DATA_DIR/dream_*.parquet` for §4.5 of the downtime notebook), `build_nightly.py` (per-night join of allskycam products with Scheduler/EFD/ConsDB/nowcast/DREAM records → `index/allsky_nightly.parquet`).
+
+allskycam vs DREAM side-by-side (`fetch_night_demo.py`, `render_cam_dream.py`): `fetch_night_demo.py <day_obs> [--full seq ...]` pulls the night's raw CR2 frames (4×-binned green plane) and **every** DREAM `cloud_sys` map (rotated to horizon coordinates) into `OUT/demo/<day_obs>/`.
+`render_cam_dream.py <day_obs> --seq N --out f.png` draws one frame: allskycam pixels + detected/missed BSC stars, NSIDE-8 cloud-index map, metrics / DREAM native NSIDE-32 extinction, NSIDE-8 mean, metrics / whole-night time-series strip. Every sky panel is in the allskycam pixel frame through the per-frame astrometric solution (E up, N right). `--movie [--t0 HH:MM --t1 HH:MM] --fps 12` renders one PNG per allskycam minute and encodes an H.264 mp4 (ffmpeg from the lsst-scipipe env). Example products in `figures/` (night 2025-09-19: broken cloud 23:30–04:30 UTC, then clear). Orientation check: per-cell correlation allskycam index vs DREAM extinction is r≈0.6 with the identity azimuth mapping and ≈0.1–0.2 for mirrored / rotated alternatives, so `sample_dream.to_horizon` has the right handedness.
+
+### Astrometry failures (`ast_mode == 'failed'`)
 A failed gate does **not** void the frame: the running (or nearest-night) solution is still applied and the cloud metrics are computed. In the v1 run 27 % of frames failed; ~40 % of those were matcher artefacts (brightest-400 list dominated by moon glare / Milky Way knots) fixed in v2, and a cluster of weeks with 2 px rms came from an inherited plate scale the refine could not adjust (fixed in v3). The rest are frames with no stars, i.e. overcast. Validation on 121 Scheduler-flag nights: P(cloud_idx>0.3 | WEATHER)=0.69, P(cloud_idx>0.3 | OPERATIONAL)=0.05, independent of moon altitude; per-night r=0.76. Of WEATHER frames the allskycam calls clear, 9 % are RH/dew-point/wind closures and the median is 74 min after the last cloudy frame (observers waiting for stable conditions / flag latency).
 
 Products in `cloud/` use the v2 (per-epoch) model; `finalize_rerun.sh` rebuilds model + cloud products after any re-run.
 
 **v3 re-run of 425 high-rms nights (2026-10-04).** A *solved* v1 frame could still carry a mis-registered solution (night median 1.4–2.0 px rms; the refine could not adjust the inherited plate scale), which drops ~half the predicted stars outside the 3-px match and leaves a flat cloud index of 0.3–0.6 on clear nights (e.g. 2025-07-17). Diagnostic: the night's 10th-percentile index sits in 0.1–0.7 (real cloud has clear gaps, overcast is 1). `index/nights_rerun_v3_rms.txt` lists the nights; after the v3 re-run they solve at 0.7–1.2 px and 10 nights remain above 1.4 px. The downtime notebook applies `CAM_RMS_MAX = 1.4` as a safeguard. Un-gated five-year fraction (index > 0.3) went 0.24 → 0.18.
 
-## Running
-Set `ALLSKY_OUT` to a writable cache root when the default repository-local data directory is not appropriate, and `SYSTEM_PERFORMANCE_DATA_DIR` to the directory with `scheduler_observatory_status.parquet` etc. (`build_log_cache.py`; read by `build_completeness.py`, written by `build_nightly.py`). Run every script with `python3 -E`, not `-E -P`: `-P` drops the script directory from `sys.path` and the `allsky_paths` / `allsky_units` imports fail.
-```
-PY=${PYTHON:-python3}   # needs rawpy + exifread
-$PY build_frame_index.py                      # ~6 min, lists both archives
-$PY allsky_reduce.py 20260520 --workers 32    # one night interactively (~1.5 min at 60 workers)
-sbatch --array=0-5 run_nights.sbatch "$ALLSKY_OUT/index/nights_rest.txt"   # batch, rubin:commissioning / milano
-sbatch --export=ALL,ALLSKY_EXTRA=--force --array=0-3 run_nights.sbatch <list>   # re-reduce existing nights
-./finalize_rerun.sh <list>                    # then re-gate + cloud metric + summary tables for those nights
-./follow_night.sh 20261015 2026-10-16T12:20   # night in progress: re-index + re-reduce hourly, finalize at the end
-$PY regate_frames.py; $PY cloud_metric.py     # derived products for everything (idempotent, skip existing)
-```
-Summary tables: `index/frames_all_regated.parquet` (one row per reduced frame), `index/cloud_all_frames.parquet`.
 Astrometric bootstrap: `calib/astrometry_bootstrap_clear.json` was solved on 2026-07-14 05:00 UTC (1290 stars, 0.53 px rms).

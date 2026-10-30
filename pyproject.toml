@@ -1,0 +1,27 @@
+[project]
+name = "rubin-allskycam"
+version = "0.7.0"
+description = "Cloud, transparency and sky-brightness record from the Rubin Observatory all-sky camera (Canon 5D Mk IV + 8-15 mm fisheye, Cerro Pachon)"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later OR BSD-3-Clause" }
+requires-python = ">=3.11"
+# Versions the 2021-07 -> 2026-10 reduction ran with (lsst-scipipe-13.0.0); lower bounds are what is known to work.
+dependencies = [
+    "numpy>=2.3",
+    "pandas>=2.3",
+    "pyarrow>=23",
+    "scipy>=1.16",
+    "astropy>=7.2",
+    "photutils>=2.3",
+    "healpy>=1.18",
+    "h5py>=3.16",
+    "rawpy>=0.27",
+    "exifread>=3.5",
+    "boto3>=1.42",
+    "opencv-python-headless>=4.13",
+]
+
+[project.optional-dependencies]
+# render_cam_dream.py, fetch_night_demo.py; rerun_notebooks.sh
+viz = ["matplotlib>=3.10"]
+notebooks = ["nbclient>=0.10", "nbformat>=5.10"]
